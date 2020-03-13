@@ -15,6 +15,7 @@ using namespace std;
 
 #define maxn 30100
 #define BETA 0.6
+#define SP0 85
 #define MaxIdleIters 1000
 #define parent_num 20
 
@@ -54,8 +55,10 @@ ofstream out;
 vector<int> min_cnty;
 int dis;
 int cnty_operating;
-int SP0;
-int bound;
+int diss[parent_num];
+int local_best_cnty;
+double cost_time;
+bool in_parent[maxn];
 
 inline double time_cost() {
 	return (double)(clock() - start_time) / CLOCKS_PER_SEC;
@@ -83,7 +86,7 @@ void read_graph(string file_name) {
 	}
 }
 
-void depth_first_search_split(int start) {
+void depth_first_search_split(int start, bool change_visited, bool add_weight) {
 	visited_vertex_num = 0;
     while(!to_visit.empty()) to_visit.pop();
     to_visit.push(start);
@@ -100,16 +103,18 @@ void depth_first_search_split(int start) {
 	int cpn_id = unused_cpn_id.top();
 	unused_cpn_id.pop();
 	used_cpn_id.insert(make_pair(visited_vertex_num, cpn_id));
-	scomp &cur = component[cpn_id];
-	cur.list.resize(visited_vertex_num);
-	cur.key_vertex = visited_vertex[0];
-	cur.size = visited_vertex_num;
+	scomp &cpn = component[cpn_id];
+	cpn.list.resize(visited_vertex_num);
+	cpn.key_vertex = visited_vertex[0];
+	cpn.size = visited_vertex_num;
 	for (int j = 0; j < visited_vertex_num; ++j) {//优化为不需要使用这个循环
 		vertex_cpn_id[visited_vertex[j]] = cpn_id;
-		cur.list[j] = visited_vertex[j];
-		if (weight[visited_vertex[j]] > weight[cur.key_vertex])
-			cur.key_vertex = visited_vertex[j];
-		visited[visited_vertex[j]] = false;
+		cpn.list[j] = visited_vertex[j];
+		if(add_weight) weight[visited_vertex[j]]++;
+		if (weight[visited_vertex[j]] > weight[cpn.key_vertex] ||
+		 (weight[visited_vertex[j]] == weight[cpn.key_vertex] && adjlist[visited_vertex[j]].size() > adjlist[cpn.key_vertex].size()))
+			cpn.key_vertex = visited_vertex[j];
+		visited[visited_vertex[j]] = change_visited;
 	}
 }
 
@@ -121,9 +126,9 @@ int seperate_graph() {
 	cnty_operating = 0;
 	for (int i = 0; i < vertex_num; ++i)
 		if (!deleted[i] && !visited[i]) {
-			depth_first_search_split(i);
-			for (int j = 0; j<visited_vertex_num; ++j)
-				visited[visited_vertex[j]] = true;//优化为不需要使用这个循环
+			depth_first_search_split(i, true, false);
+			//for (int j = 0; j < visited_vertex_num; ++j)
+			//	visited[visited_vertex[j]] = true;//优化为不需要使用这个循环
 			cnty_operating += (visited_vertex_num - 1) * visited_vertex_num / 2;
 		}
 	fill(visited, visited + vertex_num, false);
@@ -140,16 +145,16 @@ int select_large_component() {
 }
 
 void add_to_solution(int add_vertex) {
-	int decrease = 0, cpn_size = 1;
 	int cpn_id = vertex_cpn_id[add_vertex];
+	int cpn_size = component[cpn_id].size;
 	deleted[add_vertex] = true;
-	for (auto &num : adjlist[add_vertex])
-		if (!deleted[num] && vertex_cpn_id[num] == cpn_id) {//第二个判断条件表示是否已经访问过
-			depth_first_search_split(num);
+	for (auto &n : adjlist[add_vertex])
+		if (!deleted[n] && vertex_cpn_id[n] == cpn_id) {//第二个判断条件表示是否已经访问过
+			depth_first_search_split(n, false, true);
 			cnty_operating += (visited_vertex_num - 1) * visited_vertex_num / 2;
-			cpn_size += visited_vertex_num;
-			for (int i = 0; i < visited_vertex_num; ++i)
-				weight[visited_vertex[i]]++;//可以放在深度遍历里面完成
+			//cpn_size += visited_vertex_num;
+			//for (int i = 0; i < visited_vertex_num; ++i)
+			//	weight[visited_vertex[i]]++;//可以放在深度遍历里面完成
 		}
 	cnty_operating -= cpn_size * (cpn_size - 1) / 2;
 	unused_cpn_id.push(cpn_id);
@@ -191,7 +196,7 @@ void remove_from_solution() {
 			}
 	for (auto &adj : adjlist[back_vertex])
 		if (!deleted[adj]) visited[vertex_cpn_id[adj]] = false;
-	depth_first_search_split(back_vertex);
+	depth_first_search_split(back_vertex, false, false);
 }
 
 void component_based_neiborhood_search() {
@@ -261,8 +266,8 @@ int get_connectivity() {//只需要得到连通度，不需要将原图分割、
 }
 
 void population_initialization() {
+	fill(deleted, deleted + vertex_num, false);
 	for (int i = 0; i < parent_num; ++i) {
-        fill(deleted, deleted + vertex_num, false);
 		solution_operating.resize(K);
 		for (int j = 0; j < K; ++j) {
 			solution_operating[j] = rand() % vertex_num;
@@ -295,6 +300,11 @@ void population_initialization() {
 		parent[i].solution = solution_operating;
 		int cnty;
 		parent[i].connectivity = (cnty = get_connectivity());
+		if(cnty < local_best_cnty) {
+			local_best_cnty = cnty;
+			S0 = solution_operating;
+			cost_time=time_cost();
+		}
 		cout << i << " pool initialization cnty : " << cnty << endl;
         parent[i].total_distance = 0;
         for(int j = 0; j < i; ++j) {
@@ -304,43 +314,24 @@ void population_initialization() {
             parent[i].total_distance += dis;
             parent[j].total_distance += dis;
         }
+		fill(deleted, deleted + vertex_num, false);
 	}
 }
 
 void double_backbone_based_crossover(vector<int> &S1, vector<int> &S2) {
 	int cnt = 0;
-	visited_vertex_num = 0;
 	for (auto &v : solution_operating) deleted[v] = false;
 	solution_operating.clear();
-	for (auto &v : S1) visited[v] = true;
+	for (auto &v : S1) in_parent[v] = true;
 	for (auto &v : S2)
-		if (visited[v]) {
-			//solution_operating.push_back(v);
-            //deleted[v] = true;
-			visited_vertex[visited_vertex_num++] = v;
-			visited[v] = false;
+		if (in_parent[v]) {
+			solution_operating.push_back(v);
+            deleted[v] = true;
+			in_parent[v] = false;
 		}
 		else int_array[cnt++] = v;
-
-	SP0 = 85;
-	if(visited_vertex_num > bound) {
-		SP0 = 0;
-		for(int i = 0; i < visited_vertex_num; ++i) {
-			if(rand() % visited_vertex_num <= 0.95 * K) {
-				solution_operating.push_back(visited_vertex[i]);
-				deleted[visited_vertex[i]] = true;
-			}
-		}
-	}
-	else {
-		for(int i = 0; i < visited_vertex_num; ++i) {
-			solution_operating.push_back(visited_vertex[i]);
-			deleted[visited_vertex[i]] = true;
-		}
-	}
-
 	for (auto &v : S1)
-		if (visited[v]) int_array[cnt++] = v;//S1独有的点visited没有置为false
+		if (in_parent[v]) int_array[cnt++] = v;//S1独有的点visited没有置为false
 	for (int i = 0; i < cnt; ++i)
 		if (rand() % 100 <= SP0) {
             solution_operating.push_back(int_array[i]);
@@ -348,21 +339,20 @@ void double_backbone_based_crossover(vector<int> &S1, vector<int> &S2) {
         }
 	if (solution_operating.size() != K) seperate_graph();
 	if (solution_operating.size() < K) {
-		for (auto &v : S1) visited[v] = true;
-		for (auto &v : S2) visited[v] = true;//XB里面有些点并没有加入solution_operating，这时visited = true
+		for (auto &v : S1) in_parent[v] = true;
+		for (auto &v : S2) in_parent[v] = true;//XB里面有些点并没有加入solution_operating，这时visited = true
 		while (solution_operating.size() < K) {//后面add_to_solution会调用dfs_split，里面会使用visited数组，这会导致误以为这些点被删掉
 			scomp &cur = component[select_large_component()];
 			int idx = rand() % cur.size;
-			if (!visited[cur.list[idx]]) {
+			if (!in_parent[cur.list[idx]]) {
 				solution_operating.push_back(cur.list[idx]);
 				add_to_solution(solution_operating.back());
 			}
 		}
-        for (auto &v : S1) visited[v] = false;
-        for (auto &v : S2) visited[v] = false;
+        for (auto &v : S1) in_parent[v] = false;
+        for (auto &v : S2) in_parent[v] = false;
 	}
 	while (solution_operating.size() > K) remove_from_solution();
-    //for(int i = 0; i < vertex_num; ++i) if(visited[i]) cout << "yes" << endl;
 }
 
 bool cnty_compare(int i, int j) {return parent[i].connectivity < parent[j].connectivity;}
@@ -370,11 +360,18 @@ bool distance_compare(int i, int j) {return parent[i].total_distance > parent[j]
 
 void rank_based_pool_updating() {
 	parent[parent_num] = solution_struct{solution_operating, cnty_operating, 0};
+	int avg = 0;
 	for (int i = 0; i < parent_num; ++i) {
-		int tmp = get_distance(parent[i].solution, parent[parent_num].solution);
-		parent[parent_num].total_distance += tmp;
-		parent[i].total_distance += tmp;
+		dis = 0;
+		for(auto &v : parent[i].solution) dis += deleted[v];
+		dis = K - dis;
+		diss[i] = dis;
+		parent[parent_num].total_distance += dis;
+		parent[i].total_distance += dis;
+		cout << parent[i].total_distance << " ";
+		avg += parent[i].total_distance;
 	}
+	cout << parent[parent_num].total_distance << " " << avg / (parent_num + 1) << endl;
     stable_sort(indexs, indexs + parent_num + 1, cnty_compare);
     for(int i = 0; i < parent_num + 1; ++i) rank_cnty[indexs[i]] = i;
     stable_sort(indexs, indexs + parent_num + 1, distance_compare);
@@ -384,28 +381,29 @@ void rank_based_pool_updating() {
         score = BETA * rank_cnty[i] + (1 - BETA) * rank_dis[i];
         if(score > max_score) idx = i, max_score = score;
     }
-	if (idx != parent_num) swap(parent[idx], parent[parent_num]);
-	for (int i = 0; i < parent_num; ++i)
-		parent[i].total_distance -= get_distance(parent[i].solution, parent[parent_num].solution);
+	if (idx != parent_num) {
+		swap(parent[idx], parent[parent_num]);
+		for(auto &v : parent[parent_num].solution) visited[v] = true;
+		for(int i = 0; i < parent_num; ++i) {
+			dis = 0;
+			for(auto &v : parent[i].solution) dis += visited[v];
+			dis = K - dis;
+			parent[i].total_distance -= dis;
+		}
+		for(auto &v : parent[parent_num].solution) visited[v] = false;
+	}
+	else for(int i = 0; i < parent_num; ++i) parent[i].total_distance -= diss[i];
 }
 
 void critical_node_problem() {
 	srand(time(0));
-	int local_best_cnty = maxn * maxn;
+	local_best_cnty = maxn * maxn;
 	S0.clear();
 	start_time = clock();
 	population_initialization();
 	init_cost_time += time_cost();
-	for (int i = 0; i < parent_num; ++i)//直接在初始化时完成
-		if (parent[i].connectivity < local_best_cnty){
-			local_best_cnty = parent[i].connectivity;
-			S0 = parent[i].solution;
-		}
-
-	//start_time=clock();
-	double cost_time = 0;
-
-	fill(weight, weight + vertex_num, 0);
+	cost_time = 0;
+	fill(in_parent, in_parent + vertex_num, false);
 	while (!timeout()) {
 		int Si = rand() % parent_num, Sj = rand() % parent_num;
 		while (Si == Sj) Si = rand() % parent_num, Sj = rand() % parent_num;//不用参数，直接用全局变量
@@ -413,15 +411,13 @@ void critical_node_problem() {
 		component_based_neiborhood_search();
 		cout << "best connectivity once : " << local_best_cnty << " / " << cnty_operating << endl;
 		cout << "best ever : " << f_best << endl;
-		//cout << solution_operating[0] << " " << solution_operating[1] << endl;
 		if (cnty_operating < local_best_cnty) {
 			S0 = solution_operating;
 			local_best_cnty = cnty_operating;
 			cost_time = time_cost();
 		}
-		rank_based_pool_updating();//不用参数，直接用全局变量
+		rank_based_pool_updating();
 	}
-
 	if (local_best_cnty < f_best) {
         S_best = S0;
         f_best = local_best_cnty;
@@ -443,13 +439,12 @@ void print(vector<int> &solution_operating) {
 }
 
 void one_benchmark(string file_name, int k) {
-	bound = 0.95 *k;
     min_cnty.clear();
 	read_graph(file_name);
 	K = k;
     f_best=vertex_num*vertex_num, f_avg=0, succ=0;
     t_avg=0; init_cost_time=0; func_time=0; iter=0;
-    for (int i = 0; i < run_times; ++i) critical_node_problem();
+    for (int i=0; i<run_times; ++i) critical_node_problem();
     cout << fixed;
 	for(auto &cnty : min_cnty) cout << cnty << " ";
 	cout << endl;
@@ -478,11 +473,11 @@ int main() {
     vector<string> file_names = {"BenchMarks/cnd/WattsStrogatz_n500.txt", "BenchMarks/cnd/ErdosRenyi_n2500.txt", 
 	"BenchMarks/RealInstances/powergrid.txt", "BenchMarks/RealInstances/Hamilton5000.txt"};
 	vector<int> Ks = {125, 200, 494, 500};
-	string result_file_name = "results_MA_SP0.txt";
+	string result_file_name = "results_MA.txt";
     time_out = 3600;
     run_times = 10;
 	out.open(result_file_name);
-	for(int i = 1; i < 4; ++i) one_benchmark(file_names[i], Ks[i]);
+	for(int i = 0; i < 4; ++i) one_benchmark(file_names[i], Ks[i]);
 	system("pause");
 	return 0;
 }
