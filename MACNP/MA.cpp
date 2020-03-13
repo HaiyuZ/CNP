@@ -15,7 +15,6 @@ using namespace std;
 
 #define maxn 30100
 #define BETA 0.6
-#define SP0 85
 #define MaxIdleIters 1000
 #define parent_num 20
 
@@ -38,7 +37,7 @@ int int_array[maxn];
 bool deleted[maxn], visited[maxn];
 scomp component[maxn];
 solution_struct parent[parent_num + 10];
-vector<int> solution_operating, S0, S_best, tmpS;
+vector<int> solution_operating, S0, S_best, local_best_solution;
 stack<int> unused_cpn_id;
 set< pair<int, int> > used_cpn_id;
 int f_best, f_avg, succ;
@@ -53,6 +52,10 @@ int indexs[parent_num + 10];
 stack<int> to_visit;
 ofstream out;
 vector<int> min_cnty;
+int dis;
+int cnty_operating;
+int SP0;
+int bound;
 
 inline double time_cost() {
 	return (double)(clock() - start_time) / CLOCKS_PER_SEC;
@@ -78,13 +81,6 @@ void read_graph(string file_name) {
 		iss >> num >> c;
 		while (iss >> num) adjlist[i].push_back(num);
 	}
-}
-
-void dfs(int cur) {
-	visited_vertex[visited_vertex_num++] = cur;
-	visited[cur] = true;
-	for (auto &num : adjlist[cur])
-		if (!deleted[num] && !visited[num]) dfs(num);//递归实现的深度优先遍历
 }
 
 void depth_first_search_split(int start) {
@@ -122,47 +118,45 @@ int seperate_graph() {
 	for (int i = 0; i <= vertex_num; ++i) unused_cpn_id.push(i);  //add one more
 	used_cpn_id.clear();
 	fill(visited, visited + vertex_num, false);
-	int connectivity = 0;
+	cnty_operating = 0;
 	for (int i = 0; i < vertex_num; ++i)
 		if (!deleted[i] && !visited[i]) {
 			depth_first_search_split(i);
 			for (int j = 0; j<visited_vertex_num; ++j)
 				visited[visited_vertex[j]] = true;//优化为不需要使用这个循环
-			connectivity += (visited_vertex_num - 1) * visited_vertex_num / 2;
+			cnty_operating += (visited_vertex_num - 1) * visited_vertex_num / 2;
 		}
 	fill(visited, visited + vertex_num, false);
-	return connectivity;
+	return cnty_operating;
 }
 
 int select_large_component() {
 	int L = used_cpn_id.begin() -> first, R = used_cpn_id.rbegin() -> first;//使用set<pair>记录使用过的id，避免两次遍历
 	int bound = (L + R) >> 1;
 	int cnt = 0;
-	auto it = used_cpn_id.rbegin();
 	for (auto it = used_cpn_id.rbegin(); it != used_cpn_id.rend() && it -> first >= bound; ++it)//从后往前/从大到小遍历，遇到不够大的终止
-			int_array[cnt++] = it -> second;
+		int_array[cnt++] = it -> second;
 	return int_array[rand() % cnt];
 }
 
-int add_to_solution(int add_vertex) {//add_to_solution the specific one
-	int decrease = 0, sub_vertex_num = 0;
-	int cur = vertex_cpn_id[add_vertex];
+void add_to_solution(int add_vertex) {
+	int decrease = 0, cpn_size = 1;
+	int cpn_id = vertex_cpn_id[add_vertex];
 	deleted[add_vertex] = true;
 	for (auto &num : adjlist[add_vertex])
-		if (!deleted[num] && vertex_cpn_id[num] == cur) {//第二个判断条件表示是否已经访问过
+		if (!deleted[num] && vertex_cpn_id[num] == cpn_id) {//第二个判断条件表示是否已经访问过
 			depth_first_search_split(num);
-			decrease += sub_vertex_num * visited_vertex_num;
-			sub_vertex_num += visited_vertex_num;
+			cnty_operating += (visited_vertex_num - 1) * visited_vertex_num / 2;
+			cpn_size += visited_vertex_num;
 			for (int i = 0; i < visited_vertex_num; ++i)
 				weight[visited_vertex[i]]++;//可以放在深度遍历里面完成
 		}
-	decrease += sub_vertex_num;
-	unused_cpn_id.push(cur);
-	used_cpn_id.erase(make_pair(component[cur].size, cur));
-	return decrease;
+	cnty_operating -= cpn_size * (cpn_size - 1) / 2;
+	unused_cpn_id.push(cpn_id);
+	used_cpn_id.erase(make_pair(component[cpn_id].size, cpn_id));
 }
 
-int remove_from_solution() {//add_to_solution the optimal one
+void remove_from_solution() {
 	int increase = maxn * maxn, back_vertex = -1;
 	int idx = -1;
 	for (auto &v : solution_operating) {//修改为传统迭代
@@ -186,6 +180,7 @@ int remove_from_solution() {//add_to_solution the optimal one
 	solution_operating.pop_back();
 	deleted[back_vertex] = false;
 	weight[back_vertex] = 0;
+    cnty_operating += increase;
 	int cpn_id;
 	for (auto &adj : adjlist[back_vertex])
 		if (!deleted[adj])
@@ -197,34 +192,32 @@ int remove_from_solution() {//add_to_solution the optimal one
 	for (auto &adj : adjlist[back_vertex])
 		if (!deleted[adj]) visited[vertex_cpn_id[adj]] = false;
 	depth_first_search_split(back_vertex);
-	return increase;
 }
 
-int component_based_neiborhood_search() {
+void component_based_neiborhood_search() {
 	clock_t func_start_time = clock();
 	fill(weight, weight + vertex_num, 0);
-	tmpS = solution_operating;
-	int best_connectivity = seperate_graph();//放在initialize和crossover
-	int connectivity = best_connectivity;
+	local_best_solution = solution_operating;
+	int local_best_cnty = seperate_graph();//放在initialize和crossover
 	int idle_iter = 0;
 	while (idle_iter < MaxIdleIters) {
 		int add_vertex = component[select_large_component()].key_vertex;
 		solution_operating.push_back(add_vertex);
-		connectivity -= add_to_solution(add_vertex);
-		connectivity += remove_from_solution();
+		add_to_solution(add_vertex);
+        remove_from_solution();
         ++iter;
-		if (connectivity < best_connectivity) {
-			tmpS = solution_operating;
-			best_connectivity = connectivity;
+		if (cnty_operating < local_best_cnty) {
+			local_best_solution = solution_operating;
+			local_best_cnty = cnty_operating;
 			idle_iter = 0;
 		}
 		else idle_iter++;
 	}
 	for (auto &v : solution_operating) deleted[v] = false;
-	solution_operating = tmpS;
+	solution_operating = local_best_solution;
+    cnty_operating = local_best_cnty;
 	for (auto &v : solution_operating) deleted[v] = true;
 	func_time += (double)(clock() - func_start_time) / CLOCKS_PER_SEC;
-	return best_connectivity;
 }
 
 double get_distance(vector<int> &S1, vector<int> &S2) {
@@ -235,9 +228,41 @@ double get_distance(vector<int> &S1, vector<int> &S2) {
 	return K - Sim;
 }
 
+int deth_first_search(int start, vector<bool>& visited) {
+	stack<int> s;
+	s.push(start);
+	visited[start] = true;
+	int size = 0;
+	while(!s.empty()) {
+		int vertex = s.top();
+		s.pop();
+		size++;
+		for(int i = 0; i < adjlist[vertex].size(); ++i) {
+			int neibor = adjlist[vertex][i];
+			if(!deleted[neibor] && !visited[neibor]) {
+				s.push(neibor);
+				visited[neibor] = true;
+			}
+		}
+	}
+	return size;
+}
+
+int get_connectivity() {//只需要得到连通度，不需要将原图分割、记录子图信息时，使用该函数
+	int connectivity = 0;
+	vector<bool> visited(vertex_num, false);
+	for(int i = 0; i < vertex_num; ++i) {
+		if(!deleted[i] && !visited[i]) {
+			int size = deth_first_search(i, visited);
+			connectivity += size * (size - 1) / 2;
+		}
+	}
+	return connectivity;
+}
+
 void population_initialization() {
-	fill(deleted, deleted + vertex_num, false);
 	for (int i = 0; i < parent_num; ++i) {
+        fill(deleted, deleted + vertex_num, false);
 		solution_operating.resize(K);
 		for (int j = 0; j < K; ++j) {
 			solution_operating[j] = rand() % vertex_num;
@@ -246,14 +271,7 @@ void population_initialization() {
 		}
 		component_based_neiborhood_search();
 		while (true) {
-			bool flag = true;
-            /*
-			for (int j = 0; j < i; ++j)
-				if (get_distance(solution_operating, parent[j].solution) == 0) {//优化为不需要求距离，找到某个点不同即可
-					flag = false;
-					break;
-				}
-            */
+			bool differ = true;
             for(int j = 0; j < i; ++j) {
                 bool same = true;
                 for(auto &v : parent[j].solution) 
@@ -262,44 +280,65 @@ void population_initialization() {
                         break;
                     }
                 if(same) {
-                    flag = false;
+                    differ = false;
                     break;
                 }
             }
-
-			if (flag) break;
+			if (differ) break;
 			int idx = rand() % K;
-			swap(solution_operating[idx], solution_operating.back());//不需要放到最后，直接赋值
-			deleted[solution_operating.back()] = false;
-			idx = rand() % vertex_num;
-			while (deleted[idx]) idx = rand() % vertex_num;
-			deleted[solution_operating.back() = idx] = true;
+			deleted[solution_operating[idx]] = false;
+			int v = rand() % vertex_num;
+			while (deleted[idx]) v = rand() % vertex_num;
+			deleted[v] = true;
+            solution_operating[idx] = v;
 		}
 		parent[i].solution = solution_operating;
 		int cnty;
-		parent[i].connectivity = (cnty = seperate_graph());
+		parent[i].connectivity = (cnty = get_connectivity());
 		cout << i << " pool initialization cnty : " << cnty << endl;
-		for (auto &num : solution_operating) deleted[num] = false;
-	}
-	for (int i = 0; i < parent_num; ++i) {//直接在上一个循环求距离，不需要另起二重循环
-		parent[i].total_distance = 0;
-		for (int j = 0; j < parent_num; ++j)
-			parent[i].total_distance += get_distance(parent[i].solution, parent[j].solution);
+        parent[i].total_distance = 0;
+        for(int j = 0; j < i; ++j) {
+            dis = 0;
+            for(auto &v : parent[j].solution) dis += deleted[v];
+            dis = K - dis;
+            parent[i].total_distance += dis;
+            parent[j].total_distance += dis;
+        }
 	}
 }
 
 void double_backbone_based_crossover(vector<int> &S1, vector<int> &S2) {
 	int cnt = 0;
+	visited_vertex_num = 0;
 	for (auto &v : solution_operating) deleted[v] = false;
 	solution_operating.clear();
 	for (auto &v : S1) visited[v] = true;
 	for (auto &v : S2)
 		if (visited[v]) {
-			solution_operating.push_back(v);
-            deleted[v] = true;
+			//solution_operating.push_back(v);
+            //deleted[v] = true;
+			visited_vertex[visited_vertex_num++] = v;
 			visited[v] = false;
 		}
 		else int_array[cnt++] = v;
+
+	SP0 = 85;
+	if(visited_vertex_num > bound) {
+		SP0 = 0;
+		for(int i = 0; i < visited_vertex_num; ++i) {
+			if(rand() % visited_vertex_num <= 0.95 * K) {
+				solution_operating.push_back(visited_vertex[i]);
+				deleted[visited_vertex[i]] = true;
+			}
+		}
+	}
+	else {
+		for(int i = 0; i < visited_vertex_num; ++i) {
+			solution_operating.push_back(visited_vertex[i]);
+			deleted[visited_vertex[i]] = true;
+		}
+	}
+
 	for (auto &v : S1)
 		if (visited[v]) int_array[cnt++] = v;//S1独有的点visited没有置为false
 	for (int i = 0; i < cnt; ++i)
@@ -323,14 +362,14 @@ void double_backbone_based_crossover(vector<int> &S1, vector<int> &S2) {
         for (auto &v : S2) visited[v] = false;
 	}
 	while (solution_operating.size() > K) remove_from_solution();
-    for(int i = 0; i < vertex_num; ++i) if(visited[i]) cout << "yes" << endl;
+    //for(int i = 0; i < vertex_num; ++i) if(visited[i]) cout << "yes" << endl;
 }
 
 bool cnty_compare(int i, int j) {return parent[i].connectivity < parent[j].connectivity;}
 bool distance_compare(int i, int j) {return parent[i].total_distance > parent[j].total_distance;}
 
-void rank_based_pool_updating(int connectivity) {
-	parent[parent_num] = solution_struct{solution_operating, connectivity, 0};
+void rank_based_pool_updating() {
+	parent[parent_num] = solution_struct{solution_operating, cnty_operating, 0};
 	for (int i = 0; i < parent_num; ++i) {
 		int tmp = get_distance(parent[i].solution, parent[parent_num].solution);
 		parent[parent_num].total_distance += tmp;
@@ -352,14 +391,14 @@ void rank_based_pool_updating(int connectivity) {
 
 void critical_node_problem() {
 	srand(time(0));
-	int best_connectivity = maxn * maxn;
+	int local_best_cnty = maxn * maxn;
 	S0.clear();
 	start_time = clock();
 	population_initialization();
 	init_cost_time += time_cost();
 	for (int i = 0; i < parent_num; ++i)//直接在初始化时完成
-		if (parent[i].connectivity < best_connectivity){
-			best_connectivity = parent[i].connectivity;
+		if (parent[i].connectivity < local_best_cnty){
+			local_best_cnty = parent[i].connectivity;
 			S0 = parent[i].solution;
 		}
 
@@ -371,28 +410,28 @@ void critical_node_problem() {
 		int Si = rand() % parent_num, Sj = rand() % parent_num;
 		while (Si == Sj) Si = rand() % parent_num, Sj = rand() % parent_num;//不用参数，直接用全局变量
 		double_backbone_based_crossover(parent[Si].solution, parent[Sj].solution);
-		int tmp = component_based_neiborhood_search();
-		cout << "best connectivity once : " << best_connectivity << " / " << tmp << endl;
+		component_based_neiborhood_search();
+		cout << "best connectivity once : " << local_best_cnty << " / " << cnty_operating << endl;
 		cout << "best ever : " << f_best << endl;
 		//cout << solution_operating[0] << " " << solution_operating[1] << endl;
-		if (tmp < best_connectivity) {
+		if (cnty_operating < local_best_cnty) {
 			S0 = solution_operating;
-			best_connectivity = tmp;
+			local_best_cnty = cnty_operating;
 			cost_time = time_cost();
 		}
-		rank_based_pool_updating(tmp);//不用参数，直接用全局变量
+		rank_based_pool_updating();//不用参数，直接用全局变量
 	}
 
-	if (best_connectivity < f_best) {
+	if (local_best_cnty < f_best) {
         S_best = S0;
-        f_best = best_connectivity;
+        f_best = local_best_cnty;
         t_avg = cost_time;
         succ = 1;
     }
-    else if (best_connectivity == f_best) t_avg += cost_time, succ++;
-    min_cnty.push_back(best_connectivity);
-    f_avg += best_connectivity;
-    out << best_connectivity << endl;
+    else if (local_best_cnty == f_best) t_avg += cost_time, succ++;
+    min_cnty.push_back(local_best_cnty);
+    f_avg += local_best_cnty;
+    out << local_best_cnty << endl;
 }
 
 void print(vector<int> &solution_operating) {
@@ -403,14 +442,17 @@ void print(vector<int> &solution_operating) {
 	cout << "\n" << seperate_graph() << endl;
 }
 
-int one_benchmark(string file_name, int k) {
+void one_benchmark(string file_name, int k) {
+	bound = 0.95 *k;
     min_cnty.clear();
 	read_graph(file_name);
 	K = k;
     f_best=vertex_num*vertex_num, f_avg=0, succ=0;
     t_avg=0; init_cost_time=0; func_time=0; iter=0;
-    for (int i=0; i<run_times; ++i) critical_node_problem();
+    for (int i = 0; i < run_times; ++i) critical_node_problem();
     cout << fixed;
+	for(auto &cnty : min_cnty) cout << cnty << " ";
+	cout << endl;
     cout << "f_best " << f_best << "\n";
     cout << "f_avg " << setprecision(1) << double(f_avg)/run_times << "\n";
     cout << "succ " << succ << "\n"; 
@@ -429,8 +471,6 @@ int one_benchmark(string file_name, int k) {
     out << "init_cost_time " << setprecision(1) << init_cost_time/run_times << "\n";
     out << "func_time " << setprecision(1) << func_time/run_times << "\n";
     out << "iter " << iter << "\n";
-    system("pause");
-    return 0;
 }
 
 int main() {
@@ -438,11 +478,11 @@ int main() {
     vector<string> file_names = {"BenchMarks/cnd/WattsStrogatz_n500.txt", "BenchMarks/cnd/ErdosRenyi_n2500.txt", 
 	"BenchMarks/RealInstances/powergrid.txt", "BenchMarks/RealInstances/Hamilton5000.txt"};
 	vector<int> Ks = {125, 200, 494, 500};
-	string result_file_name = "results_MA.txt";
-    time_out = 600;
-    run_times = 1;
+	string result_file_name = "results_MA_SP0.txt";
+    time_out = 3600;
+    run_times = 10;
 	out.open(result_file_name);
-	for(int i = 0; i < 1; ++i) one_benchmark(file_names[i], Ks[i]);
+	for(int i = 1; i < 4; ++i) one_benchmark(file_names[i], Ks[i]);
 	system("pause");
 	return 0;
 }
